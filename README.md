@@ -1,1 +1,1 @@
-# RightHandAssetbot
+ИНСТРУКЦИЯ.md
