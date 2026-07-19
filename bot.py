@@ -1,12 +1,12 @@
-"""
-Telegram Lead-Capture Bot — aiogram 3 · Production Build
+"""Telegram Lead-Capture Bot — aiogram 3 · Production Build
 =========================================================
-Три воронки:
-  1. Коммерческая недвижимость — фото+карточка → деятельность → дата → время → телефон
-  2. ЖК Rams City              — фото+карточка → оплата → телефон
-  3. Maserati                  — фото+карточка → дата → время → расчёт → телефон
+Три воронки строго по ТЗ:
+  1. Коммерческая недвижимость — карточка → вид деятельности → дата → время → телефон
+  2. ЖК Rams City              — карточка → способ оплаты → телефон
+  3. Maserati                  — карточка → дата → время → расчёт → телефон
 
-Фотографии — из локальных папок.  Лиды — SQLite + мгновенно в чат владельца.
+Фотографии загружаются из локальных папок на диске.
+Все тексты хранятся в словаре TEXTS.
 """
 
 from __future__ import annotations
@@ -14,12 +14,9 @@ from __future__ import annotations
 import asyncio
 import calendar
 import glob
-import json
 import logging
 import os
-import sqlite3
 import sys
-import time
 from datetime import datetime
 from typing import Any
 
@@ -42,30 +39,17 @@ from aiogram.types import (
 )
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 1.  КОНФИГУРАЦИЯ  —  менять здесь
+# 1.  КОНФИГУРАЦИЯ
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 BOT_TOKEN: str = "8624784500:AAG5SKj9780_a_K2oiqkdjzQfNEfkAoV21U"
-
-# Куда отправлять лиды:
-#   • Личка владельца — вставьте числовой Telegram ID (узнать через @userinfobot)
-#   • Канал / группа  — вставьте ID канала (узнать через @getmyid_bot), формат: -100XXXXXXXXXX
-#   • Бот ДОЛЖЕН быть добавлен в канал/группу как администратор с правом на отправку сообщений
-LEADS_CHAT_ID: int = 8184332888
+ADMIN_ID: int = 8184332888
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COMMERCIAL_PHOTOS_DIR = os.path.join(BASE_DIR, "commercial real estate")
 RAMS_PHOTOS_DIR       = os.path.join(BASE_DIR, "RAMS_PHOTOS")
 MASERATI_PHOTOS_DIR   = os.path.join(BASE_DIR, "MASERATI_PHOTOS")
-DB_PATH               = os.path.join(BASE_DIR, "leads.db")
-
-# Максимум фото в альбоме. Telegram позволяет 10, но при тяжёлых файлах
-# (2-5МБ) рекомендуется 5, чтобы избежать таймаутов загрузки.
-MAX_ALBUM_PHOTOS = 5
-
-# Максимальный размер одного фото-файла в байтах (2МБ).
-# Файлы тяжелее пропускаются, чтобы не вызвать таймаут.
-MAX_PHOTO_SIZE_BYTES = 2 * 1024 * 1024
+MAX_ALBUM_PHOTOS = 10
 
 # ── Время для выбора ──
 TIME_SLOTS = [
@@ -76,7 +60,12 @@ TIME_SLOTS = [
     ("🌆 18:00 – 20:00", "18:00–20:00"),
 ]
 
-# ── Все тексты интерфейса ──
+# ── Названия месяцев ──
+MONTH_NAMES = [
+    "", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+]
+
 TEXTS: dict[str, str] = {
     "start": (
         "🤖 Здравствуйте! Рады приветствовать вас.\n\n"
@@ -100,19 +89,16 @@ TEXTS: dict[str, str] = {
         "✅ <b>Особенности:</b> Высокие потолки 3,2м, отдельный вход, "
         "витражные окна, выделенная мощность 15 кВт.\n\n"
         "💰 <b>Условия:</b> Аренда <b>399 000 ₸/мес</b>.\n\n"
-        "Нажмите кнопку ниже, чтобы задать вопрос или забронировать "
-        "время для просмотра объекта."
+        "Нажмите кнопку ниже, чтобы задать вопрос или забронировать время для просмотра объекта."
     ),
     "commercial_ask_activity": (
-        "Уточните, пожалуйста, под какой вид деятельности "
-        "вы рассматриваете помещение?"
+        "Уточните, пожалуйста, под какой вид деятельности вы рассматриваете помещение?"
     ),
     "commercial_ask_date": "📅 Выберите удобную дату для просмотра помещения:",
     "commercial_ask_time": "🕐 Выберите удобное время для просмотра:",
     "commercial_ask_phone": (
         "Чтобы мы могли зафиксировать за вами условия и связаться "
-        "для организации показа, нажмите кнопку "
-        "<b>«📱 Поделиться контактом»</b> ниже."
+        "для организации показа, нажмите кнопку <b>«📱 Поделиться контактом»</b> ниже."
     ),
     "rams_card": (
         "🏠 <b>Современная 2-комнатная (евротрешка) квартира в ЖК Rams City</b>\n\n"
@@ -139,8 +125,7 @@ TEXTS: dict[str, str] = {
         "🛣 <b>Пробег:</b> 15 000 км\n"
         "⚙️ <b>Двигатель:</b> 3.0 л / 350 л.с.\n\n"
         "✅ <b>Состояние:</b> Идеальное техническое и эстетическое состояние. "
-        "Обслуживался строго по регламенту. Салон — премиальная кожа, "
-        "кузов в бронеплёнке.\n\n"
+        "Обслуживался строго по регламенту. Салон — премиальная кожа, кузов в бронеплёнке.\n\n"
         "💰 <b>Цена:</b> <b>45 000 000 ₸</b>.\n\n"
         "Нажмите кнопку ниже, чтобы записаться на тест-драйв "
         "или получить подробный видеообзор автомобиля."
@@ -161,8 +146,7 @@ TEXTS: dict[str, str] = {
         "Если вы хотите посмотреть другие объекты, нажмите кнопку ниже."
     ),
     "not_understood": (
-        "⚠️ Действие не распознано. Пожалуйста, выберите "
-        "один из предложенных вариантов."
+        "⚠️ Действие не распознано. Пожалуйста, выберите один из предложенных вариантов."
     ),
     "cancelled": "❌ Действие отменено. Возвращаемся в главное меню…",
 }
@@ -179,54 +163,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 3.  БАЗА ДАННЫХ  (SQLite)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-def _init_db() -> None:
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS leads (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at  TEXT    NOT NULL,
-            direction   TEXT    NOT NULL,
-            user_id     INTEGER,
-            username    TEXT,
-            first_name  TEXT,
-            last_name   TEXT,
-            phone       TEXT    NOT NULL,
-            answers     TEXT,
-            delivered   INTEGER DEFAULT 0
-        )
-    """)
-    conn.commit()
-    conn.close()
-    logger.info("Database ready: %s", DB_PATH)
-
-
-def _save_lead(
-    direction: str, user_id: int, username: str | None,
-    first_name: str | None, last_name: str | None,
-    phone: str, answers: dict[str, Any], delivered: bool,
-) -> int:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.execute(
-        """INSERT INTO leads
-           (created_at,direction,user_id,username,first_name,last_name,phone,answers,delivered)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
-        (datetime.now().isoformat(), direction, user_id, username,
-         first_name, last_name, phone,
-         json.dumps(answers, ensure_ascii=False), 1 if delivered else 0),
-    )
-    lead_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    logger.info("Lead #%d saved to DB", lead_id)
-    return lead_id
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 4.  FSM СОСТОЯНИЯ
+# 3.  FSM СОСТОЯНИЯ
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
@@ -251,7 +188,7 @@ class MaseratiFSM(StatesGroup):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 5.  КЛАВИАТУРЫ И КАЛЕНДАРЬ
+# 4.  КЛАВИАТУРЫ И КАЛЕНДАРЬ
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 MAIN_MENU_KB = ReplyKeyboardMarkup(
@@ -261,12 +198,8 @@ MAIN_MENU_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text="🏎 Автомобиль Maserati")],
     ],
     resize_keyboard=True,
+    one_time_keyboard=False,
 )
-
-MONTH_NAMES = [
-    "", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
-    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
-]
 
 
 def _inline(*rows: tuple[str, str]) -> InlineKeyboardMarkup:
@@ -293,12 +226,14 @@ def _back_to_menu_inline() -> InlineKeyboardMarkup:
 
 
 def _time_slots_kb(prefix: str) -> InlineKeyboardMarkup:
+    """Создаёт клавиатуру с временными слотами."""
     rows = [(label, f"{prefix}_time_{val}") for label, val in TIME_SLOTS]
     rows.append(("⬅️ Назад в меню", "go_main"))
     return _inline(*rows)
 
 
 def build_calendar(year: int, month: int, prefix: str) -> InlineKeyboardMarkup:
+    """Строит интерактивный календарь."""
     rows: list[list[InlineKeyboardButton]] = []
     rows.append([
         InlineKeyboardButton(text="◀️", callback_data=f"{prefix}_prev_{year}_{month}"),
@@ -328,51 +263,28 @@ def build_calendar(year: int, month: int, prefix: str) -> InlineKeyboardMarkup:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 6.  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# 5.  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 def _get_local_photos(folder: str) -> list[str]:
-    """Собирает фото из папки, фильтрует слишком тяжёлые файлы."""
     exts = ("*.jpg", "*.jpeg", "*.png", "*.webp")
     files: list[str] = []
     for ext in exts:
         files += glob.glob(os.path.join(folder, ext))
-    # Фильтруем файлы тяжелее MAX_PHOTO_SIZE_BYTES
-    filtered = [f for f in sorted(files) if os.path.getsize(f) <= MAX_PHOTO_SIZE_BYTES]
-    if not filtered and files:
-        # Если все файлы тяжёлые, берём самые лёгкие
-        filtered = sorted(files, key=os.path.getsize)
-    return filtered[:MAX_ALBUM_PHOTOS]
+    return sorted(files)[:MAX_ALBUM_PHOTOS]
 
 
-async def _send_card_with_photos(
-    message: Message, folder: str, card_text: str, card_kb: InlineKeyboardMarkup,
-) -> None:
-    """Отправляет альбом + карточку в ОДНОМ сообщении (текст = caption первого фото).
-    Если фото нет или ошибка — отправляет только текст."""
+async def _send_album(message: Message, folder: str) -> None:
     photos = _get_local_photos(folder)
-    if photos:
-        try:
-            media = []
-            for i, p in enumerate(photos):
-                if i == 0:
-                    # Первое фото с caption = карточка
-                    media.append(types.InputMediaPhoto(
-                        media=FSInputFile(p),
-                        caption=card_text,
-                        parse_mode=ParseMode.HTML,
-                    ))
-                else:
-                    media.append(types.InputMediaPhoto(media=FSInputFile(p)))
-            await message.answer_media_group(media=media)
-            # Кнопки нельзя прикрепить к альбому — отправляем отдельно
-            await message.answer("👇 Выберите действие:", reply_markup=card_kb)
-            return
-        except Exception:
-            logger.exception("Album send failed, falling back to text-only")
-    # Fallback: только текст
-    await message.answer(card_text, reply_markup=card_kb)
+    if not photos:
+        logger.warning("No photos found in: %s", folder)
+        return
+    try:
+        media = [types.InputMediaPhoto(media=FSInputFile(p)) for p in photos]
+        await message.answer_media_group(media=media)
+    except Exception:
+        logger.exception("Failed to send album from %s", folder)
 
 
 async def _show_main_menu(target: Message | CallbackQuery, state: FSMContext) -> None:
@@ -384,76 +296,56 @@ async def _show_main_menu(target: Message | CallbackQuery, state: FSMContext) ->
         await target.answer(TEXTS["start"], reply_markup=MAIN_MENU_KB)
 
 
-async def _send_lead_to_owner(
-    bot: Bot, direction: str, username: str | None,
-    first_name: str | None, last_name: str | None,
-    phone: str, answers: dict[str, Any], lead_id: int,
-) -> bool:
-    """Отправляет карточку лида ТОЛЬКО владельцу / в канал. Клиент ничего не видит."""
+async def _send_lead_to_admin(
+    bot: Bot,
+    direction: str,
+    username: str | None,
+    first_name: str | None,
+    last_name: str | None,
+    phone: str,
+    answers: dict[str, Any],
+) -> None:
     answers_text = "\n".join(f"  • {k}: {v}" for k, v in answers.items())
     full_name = f"{first_name or ''} {last_name or ''}".strip() or "не указано"
-    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     text = (
-        f"🔔 <b>Новый лид #{lead_id}</b>\n\n"
+        "🔔 <b>Новый лид из бота!</b>\n\n"
         f"📂 <b>Направление:</b> {direction}\n"
-        f"👤 <b>Клиент:</b> {full_name} (@{username or 'без юзернейма'})\n"
-        f"📱 <b>Телефон:</b> {phone}\n"
-        f"🕐 <b>Время заявки:</b> {now}\n\n"
-        f"📝 <b>Ответы:</b>\n{answers_text}"
+        f"👤 <b>Пользователь:</b> {full_name} (@{username or 'без юзернейма'})\n"
+        f"📱 <b>Телефон:</b> {phone}\n\n"
+        f"📝 <b>Ответы на вопросы:</b>\n{answers_text}"
     )
     try:
-        await bot.send_message(chat_id=LEADS_CHAT_ID, text=text)
-        logger.info("Lead #%d → chat %s", lead_id, LEADS_CHAT_ID)
-        return True
+        await bot.send_message(chat_id=ADMIN_ID, text=text)
+        logger.info("Lead → admin %s | direction: %s", ADMIN_ID, direction)
     except Exception:
-        logger.exception("CRITICAL — lead #%d NOT delivered", lead_id)
-        return False
+        logger.exception("CRITICAL — lead NOT delivered to admin %s", ADMIN_ID)
 
 
 async def _finalize_lead(message: Message, state: FSMContext, direction: str) -> None:
-    t0 = time.monotonic()
     contact: Contact = message.contact
     phone = contact.phone_number
     data = await state.get_data()
     answers = {k: v for k, v in data.items() if k != "direction"}
 
-    lead_id = _save_lead(
-        direction=direction, user_id=message.from_user.id,
+    await _send_lead_to_admin(
+        bot=message.bot,
+        direction=direction,
         username=message.from_user.username,
         first_name=message.from_user.first_name,
         last_name=message.from_user.last_name,
-        phone=phone, answers=answers, delivered=False,
+        phone=phone,
+        answers=answers,
     )
-    delivered = await _send_lead_to_owner(
-        bot=message.bot, direction=direction,
-        username=message.from_user.username,
-        first_name=message.from_user.first_name,
-        last_name=message.from_user.last_name,
-        phone=phone, answers=answers, lead_id=lead_id,
-    )
-    if delivered:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("UPDATE leads SET delivered=1 WHERE id=?", (lead_id,))
-        conn.commit()
-        conn.close()
-
-    elapsed = time.monotonic() - t0
-    logger.info("Lead #%d | %.2fs (KPI <10s) | user %s", lead_id, elapsed, message.from_user.id)
-
     await state.clear()
     await message.answer("✅ Контакт получен!", reply_markup=ReplyKeyboardRemove())
     await message.answer(TEXTS["lead_submitted"], reply_markup=_back_to_menu_inline())
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 7.  ОБРАБОТЧИК КАЛЕНДАРЯ (общий)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 async def _handle_calendar(
     callback: CallbackQuery, state: FSMContext, prefix: str,
     next_state: State, next_text_key: str, next_kb_builder,
 ) -> None:
+    """Обработчик событий календаря (навигация и выбор дня)."""
     parts = callback.data.split("_")
     action = parts[1]
     if action == "ign":
@@ -462,11 +354,13 @@ async def _handle_calendar(
     year, month = int(parts[2]), int(parts[3])
     if action == "prev":
         month -= 1
-        if month < 1: month, year = 12, year - 1
+        if month < 1:
+            month, year = 12, year - 1
         await callback.message.edit_reply_markup(reply_markup=build_calendar(year, month, prefix))
     elif action == "next":
         month += 1
-        if month > 12: month, year = 1, year + 1
+        if month > 12:
+            month, year = 1, year + 1
         await callback.message.edit_reply_markup(reply_markup=build_calendar(year, month, prefix))
     elif action == "day":
         day = int(parts[4])
@@ -479,7 +373,7 @@ async def _handle_calendar(
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 8.  РОУТЕР
+# 6.  РОУТЕР И ГЛОБАЛЬНЫЕ ОБРАБОТЧИКИ
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 router = Router(name="main")
@@ -504,23 +398,25 @@ async def cb_go_main(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 9.  ВЕТКА 1 — КОММЕРЧЕСКАЯ НЕДВИЖИМОСТЬ
+# 7.  ВЕТКА 1 — КОММЕРЧЕСКАЯ НЕДВИЖИМОСТЬ
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 @router.message(F.text == "🏢 Коммерческая недвижимость")
 async def show_commercial(message: Message, state: FSMContext) -> None:
     await state.clear()
+    await _send_album(message, COMMERCIAL_PHOTOS_DIR)
     kb = _inline(
         ("📩 Оставить заявку / Задать вопрос", "com_apply"),
         ("⬅️ Назад в меню", "go_main"),
     )
-    await _send_card_with_photos(message, COMMERCIAL_PHOTOS_DIR, TEXTS["commercial_card"], kb)
+    await message.answer(TEXTS["commercial_card"], reply_markup=kb)
 
 
 @router.callback_query(F.data == "com_apply")
 async def com_ask_activity(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(CommercialFSM.activity)
+    await state.update_data(direction="Коммерция")
     kb = _inline(
         ("🏢 Офис", "com_act_office"),
         ("🛒 Магазин / Ритейл", "com_act_retail"),
@@ -544,6 +440,7 @@ async def com_activity_chosen(callback: CallbackQuery, state: FSMContext) -> Non
         await callback.message.answer("✏️ Введите вид деятельности текстом:")
         await callback.answer()
         return
+
     await state.update_data(**{"Вид деятельности": mapping[callback.data]})
     await state.set_state(CommercialFSM.view_date)
     now = datetime.now()
@@ -571,6 +468,7 @@ async def com_calendar(callback: CallbackQuery, state: FSMContext) -> None:
                            CommercialFSM.view_time, "commercial_ask_time",
                            lambda: _time_slots_kb("com"))
 
+
 @router.message(CommercialFSM.view_date)
 async def com_date_fallback(message: Message) -> None:
     await message.answer("⚠️ Выберите дату из календаря выше.")
@@ -582,8 +480,11 @@ async def com_time_chosen(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(**{"Время встречи": time_val})
     await state.set_state(CommercialFSM.phone)
     await callback.message.edit_text(f"🕐 Время: <b>{time_val}</b>")
-    await callback.message.answer(TEXTS["commercial_ask_phone"], reply_markup=_share_contact_kb())
+    await callback.message.answer(
+        TEXTS["commercial_ask_phone"], reply_markup=_share_contact_kb()
+    )
     await callback.answer()
+
 
 @router.message(CommercialFSM.view_time)
 async def com_time_fallback(message: Message) -> None:
@@ -596,23 +497,25 @@ async def com_phone_received(message: Message, state: FSMContext) -> None:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 10.  ВЕТКА 2 — ЖК RAMS CITY
+# 8.  ВЕТКА 2 — КВАРТИРА ЖК RAMS CITY
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 @router.message(F.text == "🏠 Квартира Rams City")
 async def show_rams(message: Message, state: FSMContext) -> None:
     await state.clear()
+    await _send_album(message, RAMS_PHOTOS_DIR)
     kb = _inline(
         ("🔑 Узнать условия покупки", "rams_conditions"),
         ("⬅️ Назад в меню", "go_main"),
     )
-    await _send_card_with_photos(message, RAMS_PHOTOS_DIR, TEXTS["rams_card"], kb)
+    await message.answer(TEXTS["rams_card"], reply_markup=kb)
 
 
 @router.callback_query(F.data == "rams_conditions")
 async def rams_ask_payment(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(RamsFSM.payment)
+    await state.update_data(direction="Rams City")
     kb = _inline(
         ("💵 100% оплата", "rams_pay_full"),
         ("🏦 Ипотека", "rams_pay_mortgage"),
@@ -626,13 +529,15 @@ async def rams_ask_payment(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(RamsFSM.payment, F.data.startswith("rams_pay_"))
 async def rams_payment_chosen(callback: CallbackQuery, state: FSMContext) -> None:
     mapping = {
-        "rams_pay_full": "100% оплата",
-        "rams_pay_mortgage": "Ипотека",
+        "rams_pay_full":        "100% оплата",
+        "rams_pay_mortgage":    "Ипотека",
         "rams_pay_installment": "Рассрочка",
     }
     await state.update_data(**{"Способ покупки": mapping[callback.data]})
     await state.set_state(RamsFSM.phone)
-    await callback.message.answer(TEXTS["rams_ask_phone"], reply_markup=_share_contact_kb())
+    await callback.message.answer(
+        TEXTS["rams_ask_phone"], reply_markup=_share_contact_kb()
+    )
     await callback.answer()
 
 
@@ -642,23 +547,25 @@ async def rams_phone_received(message: Message, state: FSMContext) -> None:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 11.  ВЕТКА 3 — MASERATI
+# 9.  ВЕТКА 3 — АВТОМОБИЛЬ MASERATI
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 @router.message(F.text == "🏎 Автомобиль Maserati")
 async def show_maserati(message: Message, state: FSMContext) -> None:
     await state.clear()
+    await _send_album(message, MASERATI_PHOTOS_DIR)
     kb = _inline(
         ("🏁 Записаться на тест-драйв / Осмотр", "mas_testdrive"),
         ("⬅️ Назад в меню", "go_main"),
     )
-    await _send_card_with_photos(message, MASERATI_PHOTOS_DIR, TEXTS["maserati_card"], kb)
+    await message.answer(TEXTS["maserati_card"], reply_markup=kb)
 
 
 @router.callback_query(F.data == "mas_testdrive")
 async def mas_ask_date(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(MaseratiFSM.meet_date)
+    await state.update_data(direction="Maserati")
     now = datetime.now()
     await callback.message.answer(
         TEXTS["maserati_ask_date"],
@@ -672,6 +579,7 @@ async def mas_calendar(callback: CallbackQuery, state: FSMContext) -> None:
     await _handle_calendar(callback, state, "mascal",
                            MaseratiFSM.meet_time, "maserati_ask_time",
                            lambda: _time_slots_kb("mas"))
+
 
 @router.message(MaseratiFSM.meet_date)
 async def mas_date_fallback(message: Message) -> None:
@@ -693,6 +601,7 @@ async def mas_time_chosen(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.answer(TEXTS["maserati_ask_payment"], reply_markup=kb)
     await callback.answer()
 
+
 @router.message(MaseratiFSM.meet_time)
 async def mas_time_fallback(message: Message) -> None:
     await message.answer("⚠️ Выберите время из вариантов выше.")
@@ -701,13 +610,15 @@ async def mas_time_fallback(message: Message) -> None:
 @router.callback_query(MaseratiFSM.payment, F.data.startswith("mas_pay_"))
 async def mas_payment_chosen(callback: CallbackQuery, state: FSMContext) -> None:
     mapping = {
-        "mas_pay_cash": "Наличный расчёт",
+        "mas_pay_cash":   "Наличный расчёт",
         "mas_pay_credit": "Автокредит",
-        "mas_pay_trade": "Обмен (Trade-In)",
+        "mas_pay_trade":  "Обмен (Trade-In)",
     }
     await state.update_data(**{"Вариант расчёта": mapping[callback.data]})
     await state.set_state(MaseratiFSM.phone)
-    await callback.message.answer(TEXTS["maserati_ask_phone"], reply_markup=_share_contact_kb())
+    await callback.message.answer(
+        TEXTS["maserati_ask_phone"], reply_markup=_share_contact_kb()
+    )
     await callback.answer()
 
 
@@ -717,7 +628,7 @@ async def mas_phone_received(message: Message, state: FSMContext) -> None:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 12. FALLBACK
+# 10. FALLBACK ОБРАБОТЧИКИ
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
@@ -727,7 +638,7 @@ async def mas_phone_received(message: Message, state: FSMContext) -> None:
 )
 async def phone_state_fallback(message: Message) -> None:
     await message.answer(
-        "⚠️ Нажмите кнопку <b>«📱 Поделиться контактом»</b> ниже.",
+        "⚠️ Пожалуйста, нажмите кнопку <b>«📱 Поделиться контактом»</b> ниже.",
         reply_markup=_share_contact_kb(),
     )
 
@@ -757,12 +668,11 @@ async def general_fallback(message: Message, state: FSMContext) -> None:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 13. ТОЧКА ВХОДА
+# 11. ТОЧКА ВХОДА
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 async def main() -> None:
-    _init_db()
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
