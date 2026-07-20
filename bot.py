@@ -41,17 +41,12 @@ from aiogram.types import (
 # Google Sheets
 import gspread
 from google.oauth2.service_account import Credentials
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 1.  КОНФИГУРАЦИЯ
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-BOT_TOKEN: str = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN is missing! Check your .env file.")
+BOT_TOKEN: str = "8983299294:AAFpZJVnrAva2f8hJvgJYY-pu1877d3jwrw"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COMMERCIAL_PHOTOS_DIR = os.path.join(BASE_DIR, "commercial real estate")
@@ -63,9 +58,7 @@ MASERATI_PHOTOS_DIR   = os.path.join(BASE_DIR, "MASERATI_PHOTOS")
 MAX_ALBUM_PHOTOS = 5
 
 CREDENTIALS_FILE = os.path.join(BASE_DIR, "credentials.json")
-SPREADSHEET_ID: str = os.getenv("SPREADSHEET_ID")
-if not SPREADSHEET_ID:
-    raise ValueError("SPREADSHEET_ID is missing! Check your .env file.")
+SPREADSHEET_ID: str = "1szL5sNAQMN0c90kb9j8Z8Qiw3mZ6Kpmj3EaYsErO8Lw"
 SHEET_RESIDENTS = "Резиденты"
 SHEET_WAITLIST  = "waitlist"
 SHEET_APPROVED  = "Approved"
