@@ -3,7 +3,5 @@
 __pycache__/
 leads.db
 .DS_Store
-credentials.json
-.env
 patch.py
 *.log
