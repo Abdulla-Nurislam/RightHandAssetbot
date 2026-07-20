@@ -62,7 +62,7 @@ SPREADSHEET_ID: str = "1szL5sNAQMN0c90kb9j8Z8Qiw3mZ6Kpmj3EaYsErO8Lw"
 SHEET_RESIDENTS = "Резиденты"
 SHEET_WAITLIST  = "waitlist"
 SHEET_APPROVED  = "Approved"
-SHEET_LEADS     = "Лиды"
+SHEET_LEADS     = "Лиды & События"
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
