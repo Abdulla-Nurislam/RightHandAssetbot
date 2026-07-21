@@ -510,17 +510,23 @@ def _get_local_photos(folder: str, max_count: int = MAX_ALBUM_PHOTOS) -> list[st
 async def _send_photos(message: Message, folder: str) -> None:
     """
     Отправляет фотографии как медиа-группу (один альбом в Telegram).
-    Фото предварительно сжаты, поэтому таймаутов не будет.
+    Если фото больше 10, они отправляются несколькими альбомами.
     """
-    photos = _get_local_photos(folder)
+    photos = _get_local_photos(folder, max_count=9999)
     if not photos:
         logger.warning("No photos found in: %s", folder)
         return
-    try:
-        media = [types.InputMediaPhoto(media=FSInputFile(p)) for p in photos]
-        await message.answer_media_group(media=media)
-    except Exception:
-        logger.exception("Failed to send album from %s", folder)
+    
+    chunk_size = 10
+    for i in range(0, len(photos), chunk_size):
+        chunk = photos[i:i + chunk_size]
+        try:
+            media = [types.InputMediaPhoto(media=FSInputFile(p)) for p in chunk]
+            await message.answer_media_group(media=media)
+            if len(photos) > chunk_size:
+                await asyncio.sleep(1.0)
+        except Exception:
+            logger.exception("Failed to send album chunk from %s", folder)
 
 
 async def sheets_append_lead(row: list) -> None:
